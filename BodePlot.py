@@ -3,7 +3,7 @@ from scipy.io import wavfile
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, MultipleLocator
-from ConvolutionLibrary import normalize
+from AudioDSPLib import normalize
 
 # Read in Impulse Response
 #sample_rate, IR = wavfile.read("Test Files/Impulse Responses/Marshall_IR501.wav")

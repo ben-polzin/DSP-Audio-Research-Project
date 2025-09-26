@@ -4,7 +4,7 @@
 # and Outputs the Impulse Response
 ###################################################
 
-from ConvolutionLibrary import deconvolve
+from AudioDSPLib import deconvolve
 from scipy.io import wavfile
 
 # Read in Files
