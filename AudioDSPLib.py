@@ -1,6 +1,8 @@
 import numpy as np
+import pyaudio
 from scipy.fft import fft, ifft
-from scipy.signal import fftconvolve
+from scipy.signal import fftconvolve, chirp
+import matplotlib.pyplot as plt
 
 
 def normalize(audio):
@@ -24,6 +26,128 @@ def lengthMatch(array1, array2):
         array1 = array1_pad
 
     return array1, array2
+
+
+def sineSweep(length, sampleRate=48000, start=20, stop=20000):
+    """Outputs an exponential sine sweep of the given length"""
+    t = np.linspace(0, length, int(length * sampleRate))
+    sweep = chirp(t, start, length, stop, method="logarithmic")
+    return t, sweep
+
+
+def getOutputDevices(sampleRate=48000):
+    """Return a list of audio output devices"""
+    p = pyaudio.PyAudio()
+    devices = []
+
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        if info["maxOutputChannels"] > 0 and info["defaultSampleRate"] == sampleRate:
+            devices.append((i, info["name"], info["hostApi"]))
+    p.terminate()
+    return devices
+
+
+def getInputDevices(sampleRate=48000):
+    """Return a list of audio input devices"""
+    p = pyaudio.PyAudio()
+    devices = []
+
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        if info["maxInputChannels"] > 0 and info["defaultSampleRate"] == sampleRate:
+            devices.append((i, info["name"], info["hostApi"]))
+    p.terminate()
+    return devices
+
+
+def playAudio(audio, sampleRate=48000, device=None):
+    """Plays audio through speakers"""
+    # Normalize Audio
+    audio = normalize(audio)
+
+    # Check Channels
+    if audio.ndim == 1:
+        channels = 1
+    elif audio.ndim == 2 and audio.shape[1] == 2:
+        channels = 2
+    else:
+        raise ValueError("Audio must be 1D (mono) or 2D with shape (N,2) (stereo).")
+
+    # Convert audio to 16-bit PCM
+    audioPCM = (audio * 32767).astype(np.int16).tobytes()
+
+    # Open Stream
+    p = pyaudio.PyAudio()
+    stream = p.open(format=pyaudio.paInt16,
+                    channels=channels,
+                    rate=sampleRate,
+                    output=True,
+                    output_device_index=device)
+
+    # Play Audio
+    stream.write(audioPCM)
+
+    # Close Stream
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+
+
+def playAndRecord(outputAudio, sampleRate=48000, outputDevice=None, inputDevice=None):
+    """
+    Plays audio through speakers while simultaneously recording from microphone.
+    Returns the recorded audio as a NumPy array.
+    """
+    # Normalize Audio
+    outputAudio = normalize(outputAudio)
+
+    # Check Channels
+    if outputAudio.ndim == 1:
+        outputChannels = 1
+    elif outputAudio.ndim == 2 and outputAudio.shape[1] == 2:
+        outputChannels = 2
+    else:
+        raise ValueError("Audio must be 1D (mono) or 2D with shape (N,2) (stereo).")
+
+    # Convert audio to 16-bit PCM
+    outputAudioPCM = (outputAudio * 32767).astype(np.int16).tobytes()
+
+    # Recording Setup
+    chunk = 1024  # Frames per buffer
+
+    # Open Stream
+    p = pyaudio.PyAudio()
+    stream = p.open(format=pyaudio.paInt16,
+                    channels=outputChannels,  # INPUT AND OUTPUT CHANNELS MUST BE THE SAME
+                    rate=sampleRate,
+                    output=True,
+                    output_device_index=outputDevice,
+                    input=True,
+                    input_device_index=inputDevice,
+                    frames_per_buffer=chunk)
+
+    # Create Buffers
+    recordedFrames = []
+    bytesPerFrame = 2 * outputChannels  # int16 = 2 bytes per channel
+
+    # Play & Record Audio
+    for i in range(0, len(outputAudioPCM), chunk * bytesPerFrame):
+        playChunk = outputAudioPCM[i:i + chunk * bytesPerFrame]
+        stream.write(playChunk)
+        recordChunk = stream.read(chunk)
+        recordedFrames.append(recordChunk)
+
+    # Close Stream
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+
+    # Convert Recorded Data to Float Array
+    inputAudio = np.frombuffer(b''.join(recordedFrames), dtype=np.int16)
+    inputAudio = inputAudio.astype(float) / 32767.0
+
+    return inputAudio
 
 
 def convolve(x_t, h_t):
@@ -92,3 +216,17 @@ def deconvolve(x_t, y_t):
 
     return h_t
 
+
+def graphAudio(audio, sampleRate):
+    """Inputs Audio and SampleRate and creates a graph using Matplotlib"""
+    t0 = 0
+    tf = len(audio) / sampleRate
+    t = np.linspace(t0, tf, len(audio))
+
+    plt.figure(figsize=(13, 7))
+    plt.plot(t, audio)
+    plt.title("Audio Graph")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Magnitude")
+    plt.grid()
+    plt.show()
