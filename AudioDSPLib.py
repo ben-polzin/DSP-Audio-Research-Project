@@ -3,6 +3,7 @@ import pyaudio
 from scipy.fft import fft, ifft
 from scipy.signal import fftconvolve, chirp
 import matplotlib.pyplot as plt
+import pandas as pd
 
 
 def normalize(audio):
@@ -96,6 +97,8 @@ def playAudio(audio, sampleRate=48000, device=None):
 
 def playAndRecord(outputAudio, sampleRate=48000, outputDevice=None, inputDevice=None):
     """
+    ### Want to make this record for longer to account for reverb trail ###
+
     Plays audio through speakers while simultaneously recording from microphone.
     Returns the recorded audio as a NumPy array.
     """
@@ -151,8 +154,9 @@ def playAndRecord(outputAudio, sampleRate=48000, outputDevice=None, inputDevice=
 
 
 def convolve(x_t, h_t):
-    """Performs a Convolution of an input function x_t and an impulse response h_t.
-       Designed for use with wav format audio files.
+    """
+    Performs a Convolution of an input function x_t and an impulse response h_t.
+    Designed for use with wav format audio files.
     """
 
     # Make Arrays 2D
@@ -165,6 +169,10 @@ def convolve(x_t, h_t):
     x_t = normalize(x_t)
     h_t = normalize(h_t)
 
+    # Store Length of Arrays
+    x_tLength = len(x_t)
+    h_tLength = len(h_t)
+
     # Match Lengths
     x_t, h_t = lengthMatch(x_t, h_t)
 
@@ -174,12 +182,16 @@ def convolve(x_t, h_t):
     # Normalize Output
     y_t = normalize(y_t)
 
+    # Trim Output
+    y_t = y_t[:(x_tLength + h_tLength)]
+
     return y_t
 
 
 def deconvolve(x_t, y_t):
-    """Performs a Deconvolution of output y_t and input x_t, returning the impulse response h_t.
-       Designed for use with wav format audio files.
+    """
+    Performs a Deconvolution of output y_t and input x_t, returning the impulse response h_t.
+    Designed for use with wav format audio files.
     """
 
     # Make Arrays 2D
@@ -203,9 +215,18 @@ def deconvolve(x_t, y_t):
     x_tLeft = np.transpose(x_tLeft)[0]
     x_tRight = np.transpose(x_tRight)[0]
 
+    # Zero Pad Signals to Avoid Circular Convolution Effects
+    N = len(x_tLeft) + len(y_tLeft) - 1
+
+    X_fLeft = fft(x_tLeft, n=N)
+    Y_fLeft = fft(y_tLeft, n=N)
+    X_fRight = fft(x_tRight, n=N)
+    Y_fRight = fft(y_tRight, n=N)
+
     # Deconvolve
-    h_tLeft = ifft(fft(y_tLeft) / fft(x_tLeft)).real
-    h_tRight = ifft(fft(y_tRight) / fft(x_tRight)).real
+    eps = 1e-10
+    h_tLeft = ifft(Y_fLeft / (X_fLeft + eps)).real
+    h_tRight = ifft(Y_fRight / (X_fRight + eps)).real
 
     # Normalize Output
     h_tLeft = normalize(h_tLeft)
@@ -214,10 +235,36 @@ def deconvolve(x_t, y_t):
     # Recombine Left and Right Channels
     h_t = np.transpose(np.vstack([h_tLeft, h_tRight]))
 
+    # Trim Output
+    h_t = h_t[:960000]  # Temporary Code
+
     return h_t
 
 
-def graphAudio(audio, sampleRate):
+def farinaDeconvolve(x_t, y_t):
+    """
+    Performs a linear deconvolution using the Farina method
+    Inputs:
+    x_t - Input Sine Sweep
+    y_t - Recorded Sine Sweep
+
+    Outputs:
+    h_t - System Impulse Response
+    """
+
+    # Find Inverse Filter
+    inv = 0
+
+    # Convolve with Inverse Filter
+    h_t = fftconvolve(y_t, inv, mode='full')
+
+    # Normalize Impulse Response
+    h_t = normalize(h_t)
+
+    return h_t
+
+
+def graphAudio(audio, sampleRate, t_lim=None):
     """Inputs Audio and SampleRate and creates a graph using Matplotlib"""
     t0 = 0
     tf = len(audio) / sampleRate
@@ -228,5 +275,99 @@ def graphAudio(audio, sampleRate):
     plt.title("Audio Graph")
     plt.xlabel("Time (s)")
     plt.ylabel("Magnitude")
+    plt.grid()
+
+    if t_lim is not None:
+        plt.xlim(0, t_lim)
+    else:
+        plt.xlim(0, tf)
+
+    plt.show()
+
+
+
+def fftLowPass(audio, cutoff_hz, sampleRate):
+    # --- Check that the input is stereo ---
+    if audio.ndim != 2 or audio.shape[1] != 2:
+        audio = toStereo(audio)
+
+    # --- Normalize input ---
+    audio = normalize(audio)
+
+    # --- Frequency axis ---
+    N = audio.shape[0]
+    freqs = np.fft.fftfreq(N, d=1 / sampleRate)
+    mask = np.abs(freqs) <= cutoff_hz  # 1D mask for frequencies below cutoff
+
+    # --- Process left and right channels separately ---
+    X_left = fft(audio[:, 0])
+    X_right = fft(audio[:, 1])
+
+    X_left_filtered = X_left * mask
+    X_right_filtered = X_right * mask
+
+    # --- Inverse FFT to return to time domain ---
+    y_left = ifft(X_left_filtered).real
+    y_right = ifft(X_right_filtered).real
+
+    # --- Recombine and normalize ---
+    y_t = np.column_stack((y_left, y_right))
+    y_t = normalize(y_t)
+
+    return y_t
+
+
+def fftHighPass(audio, cutoff_hz, sampleRate):
+
+    # --- Check that the input is stereo ---
+    if audio.ndim != 2 or audio.shape[1] != 2:
+        audio = toStereo(audio)
+
+    # --- Normalize input ---
+    audio = normalize(audio)
+
+    # --- Frequency axis ---
+    N = audio.shape[0]
+    freqs = np.fft.fftfreq(N, d=1 / sampleRate)
+    mask = np.abs(freqs) >= cutoff_hz  # Keep frequencies above cutoff
+
+    # --- Process left and right channels separately ---
+    X_left = fft(audio[:, 0])
+    X_right = fft(audio[:, 1])
+
+    X_left_filtered = X_left * mask
+    X_right_filtered = X_right * mask
+
+    # --- Inverse FFT to return to time domain ---
+    y_left = ifft(X_left_filtered).real
+    y_right = ifft(X_right_filtered).real
+
+    # --- Recombine and normalize ---
+    y_t = np.column_stack((y_left, y_right))
+    y_t = normalize(y_t)
+
+    return y_t
+
+
+
+# Additional Functions For Analysis
+
+def readCSV(filename, x_name="second", y_name="Volt"):
+    dataFrame = pd.read_csv(filename)
+    x = np.array(dataFrame[x_name], dtype=float)
+    y = np.array(dataFrame[y_name], dtype=float)
+    return x, y
+
+
+def plotAvsM(t_M, v_M, t_A, v_A, title, xLabel="Time (s)", yLabel="Voltage (V)"):
+    """Plot measured solution vs analytical solution"""
+    plt.figure(figsize=(8, 5))
+    plt.plot(t_A, v_A, color="blue", label="Analytical")
+    plt.plot(t_M, v_M, color="red", label="Measured")
+    plt.title(title)
+    plt.xlabel(xLabel)
+    plt.ylabel(yLabel)
+    plt.xlim(0, 0.001)
+    plt.legend()
     plt.grid()
     plt.show()
